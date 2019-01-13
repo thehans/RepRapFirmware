@@ -134,9 +134,11 @@ bool PolarKinematics::IsReachable(float x, float y, bool isCoordinated) const
 }
 
 // Limit the Cartesian position that the user wants to move to, returning true if any coordinates were changed
-bool PolarKinematics::LimitPosition(float position[], size_t numAxes, AxesBitmap axesHomed, bool isCoordinated) const
+bool PolarKinematics::LimitPosition(float position[], size_t numAxes, AxesBitmap axesHomed, bool isCoordinated, bool applyM208Limits) const
 {
-	const bool m208Limited = Kinematics::LimitPositionFromAxis(position, Z_AXIS, numAxes, axesHomed);	// call base class function to limit Z and higher axes
+	const bool m208Limited = (applyM208Limits)
+								? Kinematics::LimitPositionFromAxis(position, Z_AXIS, numAxes, axesHomed)	// call base class function to limit Z and higher axes
+								: false;
 	const float r2 = fsquare(position[0]) + fsquare(position[1]);
 	bool radiusLimited;
 	if (r2 < minRadiusSquared)
@@ -205,19 +207,23 @@ AxesBitmap PolarKinematics::MustBeHomedAxes(AxesBitmap axesMoving, bool disallow
 // If we can proceed with homing some axes, return the name of the homing file to be called. Optionally, update 'alreadyHomed' to indicate
 // that some additional axes should be considered not homed.
 // If we can't proceed because other axes need to be homed first, return nullptr and pass those axes back in 'mustBeHomedFirst'.
-const char* PolarKinematics::GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, AxesBitmap& mustHomeFirst) const
+AxesBitmap PolarKinematics::GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, const StringRef& filename) const
 {
 	// Ask the base class which homing file we should call first
-	const char* ret = Kinematics::GetHomingFileName(toBeHomed, alreadyHomed, numVisibleAxes, mustHomeFirst);
-	// Change the returned name if it is X or Y
-	if (ret == StandardHomingFileNames[X_AXIS])
+	AxesBitmap ret = Kinematics::GetHomingFileName(toBeHomed, alreadyHomed, numVisibleAxes, filename);
+	if (ret == 0)
 	{
-		ret = HomeRadiusFileName;
+		// Change the returned name if it is X or Y
+		if (StringEqualsIgnoreCase(filename.c_str(), "homex.g"))
+		{
+			filename.copy(HomeRadiusFileName);
+		}
+		else if (StringEqualsIgnoreCase(filename.c_str(), "homey.g"))
+		{
+			filename.copy(HomeBedFileName);
+		}
 	}
-	else if (ret == StandardHomingFileNames[Y_AXIS])
-	{
-		ret = HomeBedFileName;
-	}
+
 	return ret;
 }
 
@@ -251,7 +257,7 @@ void PolarKinematics::OnHomingSwitchTriggered(size_t axis, bool highEnd, const f
 
 // Limit the speed and acceleration of a move to values that the mechanics can handle.
 // The speeds in Cartesian space have already been limited.
-void PolarKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector) const
+void PolarKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector, size_t numVisibleAxes) const
 {
 	const int32_t turntableMovement = labs(dda.DriveCoordinates()[1] - dda.GetPrevious()->DriveCoordinates()[1]);
 	if (turntableMovement != 0)

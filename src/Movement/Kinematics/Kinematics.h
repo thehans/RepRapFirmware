@@ -9,7 +9,7 @@
 #define SRC_MOVEMENT_KINEMATICS_H_
 
 #include "RepRapFirmware.h"
-#include "Libraries/Math/Matrix.h"
+#include "Math/Matrix.h"
 
 inline floatc_t fcsquare(floatc_t a)
 {
@@ -17,7 +17,7 @@ inline floatc_t fcsquare(floatc_t a)
 }
 
 // Different types of kinematics we support. Each of these has a class to represent it.
-// These must have the same numeric assignments as the K parameter of the M669 command, as documented in ???
+// These must have the same numeric assignments as the K parameter of the M669 command, as documented in the GCodes wiki page
 enum class KinematicsType : uint8_t
 {
 	cartesian = 0,
@@ -29,6 +29,9 @@ enum class KinematicsType : uint8_t
 	hangprinter,
 	polar,
 	coreXYUV,
+	linearDeltaPlusZ,	// reserved for @sga, see https://forum.duet3d.com/topic/5775/aditional-carterian-z-axis-on-delta-printer
+	rotaryDelta,		// not yet implemented
+	markForged,
 
 	unknown				// this one must be last!
 };
@@ -110,7 +113,12 @@ public:
 
 	// Limit the Cartesian position that the user wants to move to, returning true if any coordinates were changed
 	// The default implementation just applies the rectangular limits set up by M208 to those axes that have been homed.
-	virtual bool LimitPosition(float coords[], size_t numVisibleAxes, AxesBitmap axesHomed, bool isCoordinated) const;
+	// applyM208Limits determines whether the m208 limits are applied, otherwise just the geometric limitations of the architecture are applied.
+	virtual bool LimitPosition(float coords[], size_t numVisibleAxes, AxesBitmap axesHomed, bool isCoordinated, bool applyM208Limits) const;
+
+	// Return true if the intermediate XY positions of a straight line move are reachable without exceeding geometric limits, given that the start and end positions are reachable.
+	// This matters for SCARA and similar printers. On most other printers, if the start and end point are reachable, so are all the intermediate points.
+	virtual bool IntermediatePositionsReachable(const float initialCoords[], const float finalCoords[], float margin) const { return true; }
 
 	// Return the set of axes that must have been homed before bed probing is allowed
 	// The default implementation requires just X and Y, but some kinematics require additional axes to be homed (e.g. delta, CoreXZ)
@@ -129,10 +137,10 @@ public:
 	virtual const char* HomingButtonNames() const { return "XYZUVWABC"; }
 
 	// This function is called when a request is made to home the axes in 'toBeHomed' and the axes in 'alreadyHomed' have already been homed.
-	// If we can proceed with homing some axes, return the name of the homing file to be called. Optionally, update 'alreadyHomed' to indicate
+	// If we can't proceed because other axes need to be homed first, return those axes.
+	// If we can proceed with homing some axes, set 'filename' to the name of the homing file to be called and return 0. Optionally, update 'alreadyHomed' to indicate
 	// that some additional axes should be considered not homed.
-	// If we can't proceed because other axes need to be homed first, return nullptr and pass those axes back in 'mustBeHomedFirst'.
-	virtual const char* GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, AxesBitmap& mustHomeFirst) const;
+	virtual AxesBitmap GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, const StringRef& filename) const;
 
 	// This function is called from the step ISR when an endstop switch is triggered during homing.
 	// Return true if the entire homing move should be terminated, false if only the motor associated with the endstop switch should be stopped.
@@ -158,7 +166,7 @@ public:
 
 	// Limit the speed and acceleration of a move to values that the mechanics can handle.
 	// The speeds along individual Cartesian axes have already been limited before this is called.
-	virtual void LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector) const = 0;
+	virtual void LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector, size_t numVisibleAxes) const = 0;
 
 	// Return true if the specified axis is a continuous rotation axis
 	virtual bool IsContinuousRotationAxis(size_t axis) const { return false; }
@@ -187,14 +195,15 @@ protected:
 	bool LimitPositionFromAxis(float coords[], size_t firstAxis, size_t numVisibleAxes, AxesBitmap axesHomed) const;
 
 	// Debugging functions
-	static void PrintMatrix(const char* s, const MathMatrix<floatc_t>& m, size_t numRows = 0, size_t maxCols = 0);
-	static void PrintVector(const char *s, const floatc_t *v, size_t numElems);
+	static void PrintMatrix(const char* s, const MathMatrix<float>& m, size_t numRows = 0, size_t maxCols = 0);
+	static void PrintMatrix(const char* s, const MathMatrix<double>& m, size_t numRows = 0, size_t maxCols = 0);
+	static void PrintVector(const char *s, const float *v, size_t numElems);
+	static void PrintVector(const char *s, const double *v, size_t numElems);
 
 	float segmentsPerSecond;				// if we are using segmentation, the target number of segments/second
 	float minSegmentLength;					// if we are using segmentation, the minimum segment size
 
 	static const char * const HomeAllFileName;
-	static const char * const StandardHomingFileNames[];
 
 private:
 	bool useSegmentation;					// true if we have to approximate linear movement using segmentation

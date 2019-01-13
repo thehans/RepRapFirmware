@@ -14,7 +14,7 @@ RotatingMagnetFilamentMonitor::RotatingMagnetFilamentMonitor(unsigned int extrud
 	: Duet3DFilamentMonitor(extruder, type),
 	  mmPerRev(DefaultMmPerRev),
 	  minMovementAllowed(DefaultMinMovementAllowed), maxMovementAllowed(DefaultMaxMovementAllowed),
-	  minimumExtrusionCheckLength(DefaultMinimumExtrusionCheckLength), comparisonEnabled(false), checkNonPrintingMoves(true)
+	  minimumExtrusionCheckLength(DefaultMinimumExtrusionCheckLength), comparisonEnabled(false), checkNonPrintingMoves(false)
 {
 	switchOpenMask = (type == 4) ? TypeMagnetSwitchOpenMask : 0;
 	Init();
@@ -71,14 +71,20 @@ bool RotatingMagnetFilamentMonitor::Configure(GCodeBuffer& gb, const StringRef& 
 		comparisonEnabled = (gb.GetIValue() > 0);
 	}
 
+	if (gb.Seen('A'))
+	{
+		seen = true;
+		checkNonPrintingMoves = (gb.GetIValue() > 0);
+	}
+
 	if (seen)
 	{
 		Init();
 	}
 	else
 	{
-		reply.printf("Duet3D rotating magnet filament monitor%s on endstop input %u, %s, sensitivity %.2fmm/rev, allowed movement %ld%% to %ld%%, check every %.1fmm, ",
-						(switchOpenMask != 0) ? " with microswitch" : "",
+		reply.printf("Duet3D rotating magnet filament monitor%s on input %u, %s, sensitivity %.2fmm/rev, allow %ld%% to %ld%%, check every %.1fmm, ",
+						(switchOpenMask != 0) ? " with switch" : "",
 						GetEndstopNumber(),
 						(comparisonEnabled) ? "enabled" : "disabled",
 						(double)mmPerRev,
@@ -95,11 +101,11 @@ bool RotatingMagnetFilamentMonitor::Configure(GCodeBuffer& gb, const StringRef& 
 		}
 		else
 		{
-			reply.catf("current position %.1f, ", (double)GetCurrentPosition());
+			reply.catf("current pos %.1f, ", (double)GetCurrentPosition());
 			if (calibrationStarted && fabsf(totalMovementMeasured) > 1.0 && totalExtrusionCommanded > 20.0)
 			{
 				const float measuredMmPerRev = totalExtrusionCommanded/totalMovementMeasured;
-				reply.catf("measured sensitivity %.2fmm/rev, measured minimum %ld%%, maximum %ld%% over %.1fmm\n",
+				reply.catf("measured sensitivity %.2fmm/rev, min %ld%% max %ld%% over %.1fmm\n",
 					(double)measuredMmPerRev,
 					lrintf(100 * minMovementRatio),
 					lrintf(100 * maxMovementRatio),
@@ -177,7 +183,7 @@ FilamentSensorStatus RotatingMagnetFilamentMonitor::Check(bool full, bool hadNon
 	{
 		hadNonPrintingMoveSinceLastSync = true;
 	}
-	else
+	else if (!hadNonPrintingMoveSinceLastSync)			// optimisation to save an unnecessary floating point addition
 	{
 		extrusionCommandedSinceLastSync += filamentConsumed;
 	}

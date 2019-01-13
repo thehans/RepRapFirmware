@@ -12,18 +12,13 @@
 #include "Movement/Move.h"
 //#include "Movement/BedProbing/RandomProbePointSet.h"
 
-// Default anchor coordinates, copied from https://github.com/tobbelobb/hangprinter/blob/fabf19bf4653d1d1daf72d53217ba5962c9aca6e/firmware/HangprinterMarlin/Configuration.h
-constexpr float DefaultAnchorA[3] = {     0.0, -2163.0, -75.5};
-constexpr float DefaultAnchorB[3] = {-1841.0,    741.0, -75.5};
-constexpr float DefaultAnchorC[3] = { 1639.0,   1404.0, -75.5};
-constexpr float DefaultAnchorDz = 3250.5;
+// Default anchor coordinates
+// These are only placeholders. Each machine must have these values calibrated in order to work correctly.
+constexpr float DefaultAnchorA[3] = {    0.0, -2000.0, -100.0};
+constexpr float DefaultAnchorB[3] = { 2000.0,  1000.0, -100.0};
+constexpr float DefaultAnchorC[3] = {-2000.0,  1000.0, -100.0};
+constexpr float DefaultAnchorDz = 3000.0;
 constexpr float DefaultPrintRadius = 1500.0;
-
-constexpr size_t HANGPRINTER_AXES = 4;
-constexpr size_t A_AXIS = 0;
-constexpr size_t B_AXIS = 1;
-constexpr size_t C_AXIS = 2;
-constexpr size_t D_AXIS = 3;
 
 // Constructor
 HangprinterKinematics::HangprinterKinematics()
@@ -39,7 +34,7 @@ void HangprinterKinematics::Init()
 	ARRAY_INIT(anchorA, DefaultAnchorA);
 	ARRAY_INIT(anchorB, DefaultAnchorB);
 	ARRAY_INIT(anchorC, DefaultAnchorC);
-    doneAutoCalibration = false;
+	doneAutoCalibration = false;
 	Recalc();
 }
 
@@ -56,7 +51,7 @@ void HangprinterKinematics::Recalc()
 	Yab = anchorA[1] - anchorB[1];
 	Ybc = anchorB[1] - anchorC[1];
 	Yca = anchorC[1] - anchorA[1];
-	Zab = anchorB[2] - anchorC[2];
+	Zab = anchorA[2] - anchorB[2];
 	Zbc = anchorB[2] - anchorC[2];
 	Zca = anchorC[2] - anchorA[2];
 	P = (  anchorB[0] * Yca
@@ -140,7 +135,7 @@ bool HangprinterKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, const
 }
 
 // Calculate the square of the line length from a spool from a Cartesian coordinate
-inline float HangprinterKinematics::LineLengthASquared(const float machinePos[3], const float anchor[3]) const
+inline float HangprinterKinematics::LineLengthSquared(const float machinePos[3], const float anchor[3]) const
 {
 	return fsquare(anchor[Z_AXIS] - machinePos[Z_AXIS]) + fsquare(anchor[Y_AXIS] - machinePos[Y_AXIS]) + fsquare(anchor[X_AXIS] - machinePos[X_AXIS]);
 }
@@ -148,15 +143,13 @@ inline float HangprinterKinematics::LineLengthASquared(const float machinePos[3]
 // Convert Cartesian coordinates to motor coordinates, returning true if successful
 bool HangprinterKinematics::CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[], bool isCoordinated) const
 {
-    // Geometry of hangprinter makes fsquare(anchorABC[Z_AXIS] - machinePos[Z_AXIS]) the smallest term in the sum.
-    // Starting sum with smallest number gives smallest roundoff error.
-	const float aSquared = LineLengthASquared(machinePos, anchorA);
-	const float bSquared = LineLengthASquared(machinePos, anchorB);
-	const float cSquared = LineLengthASquared(machinePos, anchorC);
+	const float aSquared = LineLengthSquared(machinePos, anchorA);
+	const float bSquared = LineLengthSquared(machinePos, anchorB);
+	const float cSquared = LineLengthSquared(machinePos, anchorC);
 	const float dSquared =    fsquare(machinePos[X_AXIS])
 							+ fsquare(machinePos[Y_AXIS])
 							+ fsquare(anchorDz - machinePos[Z_AXIS]);
-	if (aSquared < 0.0 && bSquared < 0.0 && cSquared < 0.0 && dSquared < 0.0)
+	if (aSquared > 0.0 && bSquared > 0.0 && cSquared > 0.0 && dSquared > 0.0)
 	{
 		motorPos[A_AXIS] = lrintf(sqrtf(aSquared) * stepsPerMm[A_AXIS]);
 		motorPos[B_AXIS] = lrintf(sqrtf(bSquared) * stepsPerMm[B_AXIS]);
@@ -180,7 +173,7 @@ bool HangprinterKinematics::IsReachable(float x, float y, bool isCoordinated) co
 }
 
 // Limit the Cartesian position that the user wants to move to returning true if we adjusted the position
-bool HangprinterKinematics::LimitPosition(float coords[], size_t numVisibleAxes, AxesBitmap axesHomed, bool isCoordinated) const
+bool HangprinterKinematics::LimitPosition(float coords[], size_t numVisibleAxes, AxesBitmap axesHomed, bool isCoordinated, bool applyM208Limits) const
 {
 	const AxesBitmap allAxes = MakeBitmap<AxesBitmap>(X_AXIS) | MakeBitmap<AxesBitmap>(Y_AXIS) | MakeBitmap<AxesBitmap>(Z_AXIS);
 	bool limited = false;
@@ -198,15 +191,18 @@ bool HangprinterKinematics::LimitPosition(float coords[], size_t numVisibleAxes,
 			limited = true;
 		}
 
-		if (coords[Z_AXIS] < reprap.GetPlatform().AxisMinimum(Z_AXIS))
+		if (applyM208Limits)
 		{
-			coords[Z_AXIS] = reprap.GetPlatform().AxisMinimum(Z_AXIS);
-			limited = true;
-		}
-		else if (coords[Z_AXIS] > reprap.GetPlatform().AxisMaximum(Z_AXIS))
-		{
-			coords[Z_AXIS] = reprap.GetPlatform().AxisMaximum(Z_AXIS);
-			limited = true;
+			if (coords[Z_AXIS] < reprap.GetPlatform().AxisMinimum(Z_AXIS))
+			{
+				coords[Z_AXIS] = reprap.GetPlatform().AxisMinimum(Z_AXIS);
+				limited = true;
+			}
+			else if (coords[Z_AXIS] > reprap.GetPlatform().AxisMaximum(Z_AXIS))
+			{
+				coords[Z_AXIS] = reprap.GetPlatform().AxisMaximum(Z_AXIS);
+				limited = true;
+			}
 		}
 	}
 	return limited;
@@ -224,9 +220,10 @@ void HangprinterKinematics::GetAssumedInitialPosition(size_t numAxes, float posi
 // This function is called when a request is made to home the axes in 'toBeHomed' and the axes in 'alreadyHomed' have already been homed.
 // If we can proceed with homing some axes, return the name of the homing file to be called.
 // If we can't proceed because other axes need to be homed first, return nullptr and pass those axes back in 'mustBeHomedFirst'.
-const char* HangprinterKinematics::GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, AxesBitmap& mustHomeFirst) const
+AxesBitmap HangprinterKinematics::GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, const StringRef& filename) const
 {
-	return "homeall.g";
+	filename.copy("homeall.g");
+	return 0;
 }
 
 // This function is called from the step ISR when an endstop switch is triggered during homing.
@@ -272,7 +269,7 @@ AxesBitmap HangprinterKinematics::MustBeHomedAxes(AxesBitmap axesMoving, bool di
 
 // Limit the speed and acceleration of a move to values that the mechanics can handle.
 // The speeds in Cartesian space have already been limited.
-void HangprinterKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector) const
+void HangprinterKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector, size_t numVisibleAxes) const
 {
 	// Limit the speed in the XY plane to the lower of the X and Y maximum speeds, and similarly for the acceleration
 	const float xyFactor = sqrtf(fsquare(normalisedDirectionVector[X_AXIS]) + fsquare(normalisedDirectionVector[Y_AXIS]));
@@ -291,12 +288,13 @@ bool HangprinterKinematics::WriteCalibrationParameters(FileStore *f) const
 	bool ok = f->Write("; Hangprinter parameters\n");
 	if (ok)
 	{
+		String<100> scratchString;
 		scratchString.printf("M669 K6 A%.3f:%.3f:%.3f B%.3f:%.3f:%.3f C%.3f:%.3f:%.3f D%.3f P%.1f\n",
 							(double)anchorA[X_AXIS], (double)anchorA[Y_AXIS], (double)anchorA[Z_AXIS],
 							(double)anchorB[X_AXIS], (double)anchorB[Y_AXIS], (double)anchorB[Z_AXIS],
 							(double)anchorC[X_AXIS], (double)anchorC[Y_AXIS], (double)anchorC[Z_AXIS],
 							(double)anchorDz, (double)printRadius);
-		ok = f->Write(scratchString.Pointer());
+		ok = f->Write(scratchString.c_str());
 	}
 	return ok;
 }
@@ -352,8 +350,9 @@ bool HangprinterKinematics::DoAutoCalibration(size_t numFactors, const RandomPro
 
 	if (reprap.Debug(moduleMove))
 	{
-		PrintParameters(scratchString);
-		debugPrintf("%s\n", scratchString.Pointer());
+		String<ScratchStringLength> scratchString;
+		PrintParameters(scratchString.GetRef());
+		debugPrintf("%s\n", scratchString.c_str());
 	}
 
 	// The following is for printing out the calculation time, see later
@@ -370,9 +369,9 @@ bool HangprinterKinematics::DoAutoCalibration(size_t numFactors, const RandomPro
 		const floatc_t zp = reprap.GetMove().GetProbeCoordinates(i, machinePos[X_AXIS], machinePos[Y_AXIS], probePoints.PointWasCorrected(i));
 		machinePos[Z_AXIS] = 0.0;
 
-		probeMotorPositions(i, A_AXIS) = sqrtf(LineLengthASquared(machinePos, anchorA));
-		probeMotorPositions(i, B_AXIS) = sqrtf(LineLengthASquared(machinePos, anchorB));
-		probeMotorPositions(i, C_AXIS) = sqrtf(LineLengthASquared(machinePos, anchorC));
+		probeMotorPositions(i, A_AXIS) = sqrtf(LineLengthSquared(machinePos, anchorA));
+		probeMotorPositions(i, B_AXIS) = sqrtf(LineLengthSquared(machinePos, anchorB));
+		probeMotorPositions(i, C_AXIS) = sqrtf(LineLengthSquared(machinePos, anchorC));
 		initialSumOfSquares += fcsquare(zp);
 	}
 
@@ -424,8 +423,17 @@ bool HangprinterKinematics::DoAutoCalibration(size_t numFactors, const RandomPro
 			PrintMatrix("Normal matrix", normalMatrix, numFactors, numFactors + 1);
 		}
 
+		if (!normalMatrix.GaussJordan(numFactors, numFactors + 1))
+		{
+			reply.copy("Unable to calculate calibration parameters. Please choose different probe points.");
+			return true;
+		}
+
 		floatc_t solution[NumHangprinterFactors];
-		normalMatrix.GaussJordan(solution, numFactors);
+		for (size_t i = 0; i < numFactors; ++i)
+		{
+			solution[i] = normalMatrix(i, numFactors);
+		}
 
 		if (reprap.Debug(moduleMove))
 		{
@@ -495,13 +503,14 @@ bool HangprinterKinematics::DoAutoCalibration(size_t numFactors, const RandomPro
 	//debugPrintf("Time taken %dms\n", (reprap.GetPlatform()->GetInterruptClocks() - startTime) * 1000 / DDA::stepClockRate);
 	if (reprap.Debug(moduleMove))
 	{
-		PrintParameters(scratchString);
-		debugPrintf("%s\n", scratchString.Pointer());
+		String<ScratchStringLength> scratchString;
+		PrintParameters(scratchString.GetRef());
+		debugPrintf("%s\n", scratchString.c_str());
 	}
 
 	reply.printf("Calibrated %d factors using %d points, deviation before %.3f after %.3f",
 			numFactors, numPoints, (double)sqrtf(initialSumOfSquares/numPoints), (double)expectedRmsError);
-	reprap.GetPlatform().MessageF(LogMessage, "%s\n", reply.Pointer());
+	reprap.GetPlatform().MessageF(LogMessage, "%s\n", reply.c_str());
 
     doneAutoCalibration = true;
     return false;
@@ -614,7 +623,7 @@ void HangprinterKinematics::Adjust(size_t numFactors, const floatc_t v[])
 }
 
 // Print all the parameters for debugging
-void HangprinterKinematics::PrintParameters(StringRef& reply) const
+void HangprinterKinematics::PrintParameters(const StringRef& reply) const
 {
 	reply.printf("Anchor coordinates (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f)\n",
 					(double)anchorA[X_AXIS], (double)anchorA[Y_AXIS], (double)anchorA[Z_AXIS],
